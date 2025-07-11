@@ -37,7 +37,6 @@ gc = gspread.authorize(creds)
 rows = 休校日_ws.get_all_values()
 for row in rows[1:]:  # 1行目はヘッダー
     if row and row[0]:
-        # 日付の正規表現も一応チェック
         if re.match(r'^\d{4}-\d{2}-\d{2}$', row[0]):
             休校日_dict[row[0]] = row[1] if len(row) > 1 else ""
 
@@ -63,7 +62,7 @@ file_name = f"{TARGET_MONTH.replace('-', '年')}月出席簿"
 sh = gc.create(file_name)
 
 # -----------------------------
-# 曜日・祝日・休校日色設定
+# 色設定
 # -----------------------------
 color_saturday = CellFormat(backgroundColor=Color(1, 0.95, 0.8))  # 薄オレンジ
 color_sunday = CellFormat(backgroundColor=Color(1, 0.8, 0.9))     # 薄ピンク
@@ -131,24 +130,51 @@ for stu in students:
 
     # シート作成
     ws = sh.add_worksheet(title=name, rows=str(10), cols=str(len(columns)+1))
-    # ヘッダー＋データ
     update_values = [[""] + columns] + [[df.index[i]] + list(df.iloc[i]) for i in range(len(df))]
     ws.update(update_values)
 
-    # 曜日・祝日・休校日で色分け
+    # -----------------------------
+    # 一括で色塗りするロジック（APIリクエスト大幅削減！）
+    # -----------------------------
+    color_cols = defaultdict(list)
     for col, day in enumerate(days, start=2):  # B列から
         dt = datetime.strptime(day, "%Y-%m-%d")
-        cell_range = gspread.utils.rowcol_to_a1(2, col) + ":" + gspread.utils.rowcol_to_a1(5, col)
         if day in 休校日_dict:
-            format_cell_range(ws, cell_range, color_school_closed)
+            color_cols["school_closed"].append(col)
         elif jpholiday.is_holiday(dt):
-            format_cell_range(ws, cell_range, color_holiday)
+            color_cols["holiday"].append(col)
         elif dt.weekday() == 5:
-            format_cell_range(ws, cell_range, color_saturday)
+            color_cols["saturday"].append(col)
         elif dt.weekday() == 6:
-            format_cell_range(ws, cell_range, color_sunday)
+            color_cols["sunday"].append(col)
+    # 範囲を連続区間ごとにまとめて色塗り
+    def group_ranges(cols):
+        if not cols:
+            return []
+        cols = sorted(cols)
+        groups = [[cols[0]]]
+        for c in cols[1:]:
+            if c == groups[-1][-1] + 1:
+                groups[-1].append(c)
+            else:
+                groups.append([c])
+        return groups
 
-# デフォルトのSheet1は削除
+    color_map = {
+        "school_closed": color_school_closed,
+        "holiday": color_holiday,
+        "saturday": color_saturday,
+        "sunday": color_sunday
+    }
+
+    for key in color_cols:
+        for group in group_ranges(color_cols[key]):
+            start_col = group[0]
+            end_col = group[-1]
+            rng = f"{gspread.utils.rowcol_to_a1(2, start_col)}:{gspread.utils.rowcol_to_a1(5, end_col)}"
+            format_cell_range(ws, rng, color_map[key])
+
+# デフォルトのSheet1削除
 try:
     sh.del_worksheet(sh.worksheet("Sheet1"))
 except Exception:
